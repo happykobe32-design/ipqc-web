@@ -489,29 +489,52 @@ if selected_model:
                         else:
                             ws.column_dimensions[col_letter].width = adjusted_width
                     # === 儲存為下載檔 ===
+                    # 匯出下載檔案
                     bio = io.BytesIO()
                     wb.save(bio)
                     st.session_state['download_ready'] = True
                     st.session_state['download_data'] = bio.getvalue()
                     st.success("✅ 匯出成功，請點選下方下載")
-
-
                     
-                    # ✅ 匯出完成後自動儲存至 output 資料夾（放在 wb.save(bio) 後）
-                    # ✅ 儲存為下載檔，並使用西元日期、不包含時間
-                    bio = io.BytesIO()
-                    wb.save(bio)
-                    
+                    # 儲存至本地 output 資料夾（只保留日期）
                     now = datetime.now()
-                    date_str = now.strftime('%Y%m%d')  # 只保留西元日期
+                    date_str = now.strftime('%Y%m%d')
                     filename = f"{selected_model}_{'_'.join(selected_modules)}_{date_str}_IPQC填寫版.xlsx"
                     save_path = os.path.join("output", filename)
                     os.makedirs("output", exist_ok=True)
                     with open(save_path, "wb") as f:
-                        f.write(bio.getvalue())   
-        if st.session_state.get('download_ready', False):
-            st.download_button(
-                "📥 下載 Excel 檔案",
-                data=st.session_state['download_data'],
-                file_name=f"{selected_model}_{selected_modules}_IPQC填寫版_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            )
+                        f.write(bio.getvalue())
+                    
+                    # ✅ 匯出後自動上傳至 Google Drive
+                    from google.oauth2 import service_account
+                    from googleapiclient.discovery import build
+                    from googleapiclient.http import MediaIoBaseUpload
+                    
+                    def upload_to_gdrive(filepath, filename, folder_id=None):
+                        SCOPES = ['https://www.googleapis.com/auth/drive.file']
+                        SERVICE_ACCOUNT_FILE = 'ipqc-access.json'
+                    
+                        credentials = service_account.Credentials.from_service_account_file(
+                            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+                    
+                        service = build('drive', 'v3', credentials=credentials)
+                    
+                        file_metadata = {'name': filename}
+                        if folder_id:
+                            file_metadata['parents'] = [folder_id]
+                    
+                        media = MediaIoBaseUpload(open(filepath, 'rb'),
+                                                  mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                        uploaded_file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+                        print("✅ 已上傳到 Google Drive，檔案 ID：", uploaded_file.get('id'))
+                    
+                    # ✅ 呼叫上傳（如需指定資料夾，請加上 folder_id="你的ID"）
+                    upload_to_gdrive(save_path, filename, folder_id="1DfzSY5zeDaeLlsdWGB78wwxrQazxeX3h")
+
+                    # 提供下載按鈕
+                    if st.session_state.get('download_ready', False):
+                        st.download_button(
+                            "📥 下載 Excel 檔案",
+                            data=st.session_state['download_data'],
+                            file_name=f"{selected_model}_{selected_modules}_IPQC填寫版_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                        )
