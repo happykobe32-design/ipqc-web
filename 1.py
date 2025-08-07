@@ -179,20 +179,20 @@ df["模組"] = df["模組"].apply(normalize_module)
 if not complaint_df.empty:
     complaint_df.columns = complaint_df.columns.str.strip()
     complaint_df["機型"] = complaint_df["機型"].astype(str).str.strip()
-    try:
-        complaint_df = complaint_df[complaint_df['模組'] != ""]
-    except KeyError:
-        # 若找不到固定欄位，就用模糊比對找欄位
-        module_col = [col for col in complaint_df.columns if "模組" in str(col)]
-        if module_col:
-            complaint_df = complaint_df[complaint_df[module_col[0]] != ""]
-        else:
-            st.warning("⚠️ 找不到「模組」欄位")
-
+    complaint_df["模組"] = complaint_df["模組"].apply(normalize_module)
 
 # 過濾模組只保留非空值（已排除完全無效模組）
 df = df[df['模組'] != ""]
-complaint_df = complaint_df[complaint_df['模組'] != ""]
+try:
+    complaint_df = complaint_df[complaint_df['模組'] != ""]
+except KeyError:
+    # 若找不到固定欄位，就用模糊比對找欄位
+    module_col = [col for col in complaint_df.columns if "模組" in str(col)]
+    if module_col:
+        complaint_df = complaint_df[complaint_df[module_col[0]] != ""]
+    else:
+        st.warning("⚠️ 找不到「模組」欄位")
+
 
 # 合併主資料與客訴資料的機型與模組組合
 model_module_df = pd.concat([
