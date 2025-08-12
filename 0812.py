@@ -9,79 +9,6 @@ import re
 from datetime import datetime
 import os
 import zipfile
-# ----- Microsoft Graph (OneDrive / SharePoint) helper functions -----
-import requests
-import json
-from msal import ConfidentialClientApplication
-
-def _get_secret(key):
-    # 先試 st.secrets，再 fallback 到環境變數（方便開發）
-    try:
-        return st.secrets[key]
-    except Exception:
-        return os.environ.get(key)
-
-def get_graph_token():
-    client_id = _get_secret("client_id")
-    client_secret = _get_secret("client_secret")
-    tenant_id = _get_secret("tenant_id")
-    if not all([client_id, client_secret, tenant_id]):
-        raise RuntimeError("Missing Graph credentials. Put client_id/client_secret/tenant_id into Streamlit secrets.")
-    authority = f"https://login.microsoftonline.com/{tenant_id}"
-    app = ConfidentialClientApplication(client_id, authority=authority, client_credential=client_secret)
-    token = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
-    if "access_token" not in token:
-        raise RuntimeError(f"Failed to obtain Graph token: {token}")
-    return token["access_token"]
-
-def get_cached_site_id():
-    # cache site id in session_state to avoid repeated requests
-    if "_site_id" not in st.session_state:
-        hostname = _get_secret("sharepoint_hostname")  # e.g. "yourcompany.sharepoint.com"
-        site_path = _get_secret("sharepoint_site_path") or ""  # e.g. "sites/YourSite" or empty
-        token = get_graph_token()
-        hdrs = {"Authorization": f"Bearer {token}"}
-        if site_path:
-            url = f"https://graph.microsoft.com/v1.0/sites/{hostname}:/{site_path}"
-        else:
-            url = f"https://graph.microsoft.com/v1.0/sites/{hostname}"
-        r = requests.get(url, headers=hdrs)
-        r.raise_for_status()
-        st.session_state["_site_id"] = r.json()["id"]
-    return st.session_state["_site_id"]
-
-def list_folder_children(site_id, folder_path):
-    token = get_graph_token()
-    hdrs = {"Authorization": f"Bearer {token}"}
-    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{folder_path}:/children"
-    r = requests.get(url, headers=hdrs)
-    r.raise_for_status()
-    return r.json().get("value", [])
-
-def find_file_in_folder(site_id, folder_path, filename):
-    items = list_folder_children(site_id, folder_path)
-    for it in items:
-        if it.get("name") == filename:
-            return it
-    return None
-
-def download_file_bytes(site_id, item_path):
-    token = get_graph_token()
-    hdrs = {"Authorization": f"Bearer {token}"}
-    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{item_path}:/content"
-    r = requests.get(url, headers=hdrs, stream=True)
-    r.raise_for_status()
-    return r.content
-
-def upload_bytes_to_folder(site_id, folder_path, filename, file_bytes):
-    token = get_graph_token()
-    url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{folder_path}/{filename}:/content"
-    hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"}
-    r = requests.put(url, headers=hdrs, data=file_bytes)
-    r.raise_for_status()
-    return r.json()
-
-
 INSPECTION_PATH = "data/IPQC點檢項目最新1.xlsx"
 COMPLAINT_PATH = "data/客訴調查總表.xlsx"
 
@@ -90,7 +17,9 @@ st.title("📋三和 IPQC 點檢表產出工具")
 
 # ✅ 後台管理功能（收合式）
 st.sidebar.header("⚙️ 後台管理")
+
 with st.sidebar.expander("📂 後台資料管理", expanded=False):
+
         new_inspection = st.file_uploader("📄 上傳新的點檢資料", type=["xlsx"], key="upload_inspection")
         if new_inspection:
             data = new_inspection.read()
@@ -98,14 +27,6 @@ with st.sidebar.expander("📂 後台資料管理", expanded=False):
                 f.write(data)
             st.cache_data.clear()
             st.success("✅ 點檢資料已更新（本機暫存）")
-        # 上傳到 OneDrive
-        try:
-            site_id = get_cached_site_id()
-            upload_folder = _get_secret("upload_folder") or "Shared Documents/IPQC_上傳_點檢資料"
-            upload_bytes_to_folder(site_id, upload_folder, new_inspection.name, data)
-            st.sidebar.success("✅ 已上傳到公司 OneDrive（上傳資料夾）")
-        except Exception as e:
-            st.sidebar.error("⛔ 上傳到 OneDrive 失敗：" + str(e))
 
         new_complaint = st.file_uploader("📄 上傳新的客訴資料", type=["xlsx"], key="upload_complaint")
         if new_complaint:
@@ -114,14 +35,6 @@ with st.sidebar.expander("📂 後台資料管理", expanded=False):
                 f.write(data)
             st.cache_data.clear()
             st.success("✅ 客訴資料已更新（本機暫存）")
-        try:
-            site_id = get_cached_site_id()
-            upload_folder = _get_secret("upload_folder") or "Shared Documents/IPQC_上傳_點檢資料"
-            upload_bytes_to_folder(site_id, upload_folder, new_complaint.name, data)
-            st.sidebar.success("✅ 已上傳客訴檔到公司 OneDrive（上傳資料夾）")
-        except Exception as e:
-            st.sidebar.error("⛔ 上傳到 OneDrive 失敗：" + str(e))
-
 
 # ✅ IPQC Excel 匯出樣式優化 + 多檔案後台查詢功能（依日期、機型、模組）
 st.sidebar.markdown("### 📁 查詢已儲存表單")
@@ -254,35 +167,6 @@ def normalize_module(val):
 
 
 # ========== 載入並處理資料 ==========
-# ---- 嘗試從 OneDrive/SharePoint 同步最新上傳檔案到本機暫存（如果設定了 secret） ----
-try:
-    site_id = get_cached_site_id()
-    upload_folder = _get_secret("upload_folder") or "Shared Documents/IPQC_上傳_點檢資料"
-    # 你原先預設的檔名（如果你常用固定檔名）
-    inspection_name = _get_secret("inspection_filename") or os.path.basename(INSPECTION_PATH)
-    complaint_name = _get_secret("complaint_filename") or os.path.basename(COMPLAINT_PATH)
-
-    # 先檢查 inspection 檔
-    itm = find_file_in_folder(site_id, upload_folder, inspection_name)
-    if itm:
-        bytes_data = download_file_bytes(site_id, f"{upload_folder}/{inspection_name}")
-        with open(INSPECTION_PATH, "wb") as f:
-            f.write(bytes_data)
-        st.info(f"已從公司 OneDrive 同步點檢檔：{inspection_name}")
-
-    # 再檢查 complaint 檔
-    itm2 = find_file_in_folder(site_id, upload_folder, complaint_name)
-    if itm2:
-        bytes_data = download_file_bytes(site_id, f"{upload_folder}/{complaint_name}")
-        with open(COMPLAINT_PATH, "wb") as f:
-            f.write(bytes_data)
-        st.info(f"已從公司 OneDrive 同步客訴檔：{complaint_name}")
-
-except Exception as e:
-    # 不要中斷 App，僅顯示警告（可能是尚未設定 secrets 或權限）
-    st.warning("OneDrive 同步失敗（可忽略）： " + str(e))
-
-
 df = read_all_sheets(INSPECTION_PATH)
 complaint_df = read_all_sheets(COMPLAINT_PATH)
 
@@ -621,17 +505,7 @@ if selected_model:
                     save_path = os.path.join("output", filename)
                     os.makedirs("output", exist_ok=True)
                     with open(save_path, "wb") as f:
-                        f.write(bio.getvalue()) 
-                        
-                        # 同步上傳到 OneDrive 歷史資料夾
-                        try:
-                            site_id = get_cached_site_id()
-                            history_folder = _get_secret("history_folder") or "Shared Documents/IPQC_歷史資料"
-                            upload_bytes_to_folder(site_id, history_folder, filename, bio.getvalue())
-                            st.success("✅ 匯出結果已上傳至公司 OneDrive（歷史資料）")
-                        except Exception as e:
-                            st.warning("⚠️ 匯出後上傳到 OneDrive 失敗：" + str(e))
-
+                        f.write(bio.getvalue())   
         if st.session_state.get('download_ready', False):
             st.download_button(
                 "📥 下載 Excel 檔案",
